@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; script-src 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zayriox</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="auth" id="auth" hidden></div>
+<div class="app" id="app" hidden>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-top drag">
+      <div class="brand"><span class="orb"></span><span>Zayriox</span></div>
+      <button class="icon-btn nodrag" id="btnCollapse" data-icon="sidebar" title="Seitenleiste schließen" aria-label="Seitenleiste schließen"></button>
+    </div>
+    <button class="new-chat" id="btnNew"><i data-icon="edit"></i><span>Neuer Chat</span></button>
+    <label class="search"><i data-icon="search"></i><input id="search" placeholder="Chats durchsuchen" autocomplete="off" spellcheck="false"></label>
+    <nav class="chat-list" id="chatList" aria-label="Chat-Verlauf"></nav>
+    <div class="side-bottom">
+      <button class="side-btn" id="btnOwner" hidden><i data-icon="shield"></i><span>Owner-Bereich</span></button>
+      <button class="side-btn" id="btnSettings"><i data-icon="gear"></i><span>Einstellungen &amp; Konto</span></button>
+      <div class="profile">
+        <span class="avatar" id="avatar">Z</span>
+        <div class="who"><strong id="pname">Konto</strong><small id="prole">Läuft auf diesem Gerät</small></div>
+        <button class="icon-btn" id="btnLogout" data-icon="logout" title="Abmelden" aria-label="Abmelden"></button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar drag">
+      <button class="icon-btn nodrag" id="btnOpenSide" data-icon="sidebar" title="Seitenleiste öffnen" aria-label="Seitenleiste öffnen"></button>
+      <div class="mode-wrap nodrag">
+        <button class="mode-btn" id="modeBtn" aria-haspopup="listbox"><span id="modeLabel">Auto</span><i data-icon="chev"></i></button>
+        <div class="menu" id="modeMenu" role="listbox" hidden></div>
+      </div>
+      <div class="spacer"></div>
+      <span class="status-pill nodrag" id="statusPill"></span>
+    </header>
+
+    <section class="scroll" id="scroll"><div class="thread" id="thread"></div></section>
+
+    <footer class="composer-wrap">
+      <div class="attach-chips" id="chips"></div>
+      <div class="composer" id="composer">
+        <button class="icon-btn" id="btnAttach" data-icon="clip" title="Datei oder Bild anhängen" aria-label="Datei oder Bild anhängen"></button>
+        <button class="web-toggle" id="btnWeb" aria-pressed="false" title="Websuche ein/aus"><i data-icon="globe"></i><span>Web</span></button>
+        <textarea id="input" rows="1" placeholder="Schreibe eine Nachricht an Zayriox…" spellcheck="false"></textarea>
+        <button class="icon-btn" id="btnMic" data-icon="mic" title="Spracheingabe" aria-label="Spracheingabe"></button>
+        <button class="send" id="btnSend" title="Senden" aria-label="Senden"></button>
+      </div>
+      <p class="fineprint">Zayriox läuft lokal auf deinem Gerät und kann Fehler machen. Prüfe wichtige Angaben.</p>
+    </footer>
+    <input type="file" id="file" multiple hidden accept=".txt,.md,.csv,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif,.js,.ts,.py,.java,.c,.cpp,.cs,.go,.rs,.html,.css,.sql,.yml,.yaml,.xml,.log,.sh,.php,.rb">
+  </main>
+</div>
+
+<div class="modal" id="modal" hidden></div>
+<div class="modal top" id="modal2" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="dropzone" id="drop" hidden><div>Datei hier ablegen</div></div>
+
+<script src="markdown.js"></script>
+<script src="core.js"></script>
+<script src="auth.js"></script>
+<script src="app.js"></script>
+<script src="owner.js"></script>
+<script src="start.js"></script>
+</body>
+</html>
