@@ -24,21 +24,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Projektordner finden (dort, wo die echte package.json liegt)
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          function Find-Project($root) {
+            Get-ChildItem -Path $root -Recurse -Depth 4 -Filter package.json -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' } |
+              Where-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).name -eq 'zayriox' } catch { $false } } |
+              Select-Object -First 1
+          }
+          $found = Find-Project $ws
+          if (-not $found) {
+            # Falls versehentlich die ZIP-Datei selbst hochgeladen wurde: automatisch entpacken
+            $zips = Get-ChildItem -Path $ws -Recurse -Depth 2 -Filter *.zip -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' }
+            foreach ($z in $zips) {
+              $target = Join-Path $ws ("_entpackt_" + [IO.Path]::GetFileNameWithoutExtension($z.Name))
+              Write-Host "Keine package.json gefunden - entpacke $($z.FullName)"
+              Expand-Archive -Path $z.FullName -DestinationPath $target -Force
+              $found = Find-Project $target
+              if ($found) { break }
+            }
+          }
+          if (-not $found) {
+            Write-Host "Inhalt des Repositorys (bis 2 Ebenen):"
+            Get-ChildItem -Path $ws -Recurse -Depth 2 | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } | ForEach-Object { $_.FullName.Substring($ws.Length) }
+            Write-Error "Keine package.json des Projekts 'zayriox' gefunden. Bitte den INHALT des Zayriox-Ordners (package.json, src, renderer, assets, scripts) ins Repository hochladen."
+            exit 1
+          }
+          $dir = $found.DirectoryName
+          $rel = [IO.Path]::GetRelativePath($ws, $dir).Replace('\', '/')
+          Write-Host "Projektordner: '$rel' ($dir)"
+          foreach ($need in @('src\main.js', 'src\preload.cjs', 'renderer\index.html', 'assets\icon.png', 'scripts\test.mjs')) {
+            if (-not (Test-Path (Join-Path $dir $need))) { Write-Error "Im Projektordner fehlt: $need"; exit 1 }
+          }
+          "PROJECT_DIR=$rel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Abhängigkeiten installieren
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm install
 
       - name: Logik-Tests (Konten, 2FA, Owner-Rechte, Limits, Suche …)
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm test
 
       - name: Windows-Installer bauen (Zayriox_Setup.exe)
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run dist
 
       - name: Build-Ergebnis anzeigen
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           Get-ChildItem dist | Select-Object Name, Length | Format-Table -AutoSize | Out-Host
           if (-not (Test-Path "dist\Zayriox_Setup.exe")) { Write-Error "dist\Zayriox_Setup.exe wurde nicht erzeugt"; exit 1 }
@@ -46,6 +86,7 @@ jobs:
 
       - name: Kleines KI-Modell für den Selbsttest laden
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" -OutFile "$env:RUNNER_TEMP\selftest-model.gguf"
@@ -56,6 +97,7 @@ jobs:
       - name: Sprach-Testdatei mit Windows-SAPI erzeugen
         if: env.TEST_MODE == 'full'
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $wav = Join-Path $env:RUNNER_TEMP "zayriox-voice-test.wav"
           $voice = New-Object -ComObject SAPI.SpVoice
@@ -71,6 +113,7 @@ jobs:
 
       - name: Selbsttest der entpackten App (echtes Fenster, Konten, echte KI, je nach Modus Dateien/Bild/Web/Voice)
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $out = "$env:RUNNER_TEMP\selftest-unpacked.json"
           $argList = @("--selftest", "--selftest-out=$out", "--selftest-model=$env:RUNNER_TEMP\selftest-model.gguf", "--selftest-dir=$env:RUNNER_TEMP\st1")
@@ -84,6 +127,7 @@ jobs:
 
       - name: Installer wirklich installieren (still) und Desktop-Verknüpfung prüfen
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $setup = Start-Process -FilePath "dist\Zayriox_Setup.exe" -ArgumentList "/S" -PassThru -Wait
           Write-Host "Installer-Exit: $($setup.ExitCode)"
@@ -101,6 +145,7 @@ jobs:
 
       - name: Selbsttest der INSTALLIERTEN App
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $out = "$env:RUNNER_TEMP\selftest-installed.json"
           $argList = @("--selftest", "--selftest-out=$out", "--selftest-dir=$env:RUNNER_TEMP\st2")
@@ -113,6 +158,7 @@ jobs:
 
       - name: Rauchtest mit normalem Start (kein Browser, kein localhost, kein CMD-Fenster)
         shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $p = Start-Process -FilePath $env:ZAYRIOX_EXE -PassThru
           $null = $p.Handle
@@ -144,9 +190,9 @@ jobs:
         with:
           name: ${{ env.TEST_MODE == 'core' && 'Zayriox_Setup_NUR_KERNTESTS' || 'Zayriox_Setup' }}
           path: |
-            dist/Zayriox_Setup.exe
-            dist/latest.yml
-            dist/*.blockmap
+            ${{ env.PROJECT_DIR }}/dist/Zayriox_Setup.exe
+            ${{ env.PROJECT_DIR }}/dist/latest.yml
+            ${{ env.PROJECT_DIR }}/dist/*.blockmap
           if-no-files-found: error
 
       - name: Selbsttest-Protokolle und App-Logs hochladen
@@ -165,6 +211,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/Zayriox_Setup.exe
-            dist/latest.yml
-            dist/*.blockmap
+            ${{ env.PROJECT_DIR }}/dist/Zayriox_Setup.exe
+            ${{ env.PROJECT_DIR }}/dist/latest.yml
+            ${{ env.PROJECT_DIR }}/dist/*.blockmap
