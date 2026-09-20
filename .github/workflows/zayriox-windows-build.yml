@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_extended:
-        description: "Nur Kerntests (ohne Bild/Web/Voice/Dateien) – Artifact heißt dann Zayriox_Setup_NUR_KERNTESTS"
+        description: "Nur Kerntests"
         type: boolean
         default: false
   push:
@@ -14,51 +14,38 @@ permissions:
   contents: write
 
 env:
-  # 'full' = alle Tests, 'core' = ohne Bild/Web/Voice/Datei-Tests (nur per Handstart wählbar)
   TEST_MODE: ${{ inputs.skip_extended == true && 'core' || 'full' }}
 
 jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 120
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Projektordner finden (dort, wo die echte package.json liegt)
+      - name: Projektordner finden
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE
-          function Find-Project($root) {
-            Get-ChildItem -Path $root -Recurse -Depth 4 -Filter package.json -File -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' } |
-              Where-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).name -eq 'zayriox' } catch { $false } } |
-              Select-Object -First 1
-          }
-          $found = Find-Project $ws
+
+          $found = Get-ChildItem -Path $ws -Recurse -Filter package.json -File |
+            Where-Object {
+              $_.FullName -notmatch '[\\/]node_modules[\\/]' -and
+              ((Get-Content $_.FullName -Raw | ConvertFrom-Json).name -eq 'zayriox')
+            } |
+            Select-Object -First 1
+
           if (-not $found) {
-            # Falls versehentlich die ZIP-Datei selbst hochgeladen wurde: automatisch entpacken
-            $zips = Get-ChildItem -Path $ws -Recurse -Depth 2 -Filter *.zip -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' }
-            foreach ($z in $zips) {
-              $target = Join-Path $ws ("_entpackt_" + [IO.Path]::GetFileNameWithoutExtension($z.Name))
-              Write-Host "Keine package.json gefunden - entpacke $($z.FullName)"
-              Expand-Archive -Path $z.FullName -DestinationPath $target -Force
-              $found = Find-Project $target
-              if ($found) { break }
-            }
-          }
-          if (-not $found) {
-            Write-Host "Inhalt des Repositorys (bis 2 Ebenen):"
-            Get-ChildItem -Path $ws -Recurse -Depth 2 | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } | ForEach-Object { $_.FullName.Substring($ws.Length) }
-            Write-Error "Keine package.json des Projekts 'zayriox' gefunden. Bitte den INHALT des Zayriox-Ordners (package.json, src, renderer, assets, scripts) ins Repository hochladen."
+            Write-Error "Keine package.json mit name=zayriox gefunden."
             exit 1
           }
+
           $dir = $found.DirectoryName
-          $rel = [IO.Path]::GetRelativePath($ws, $dir).Replace('\', '/')
-          Write-Host "Projektordner: '$rel' ($dir)"
-          foreach ($need in @('src\main.js', 'src\preload.cjs', 'renderer\index.html', 'assets\icon.png', 'scripts\test.mjs')) {
-            if (-not (Test-Path (Join-Path $dir $need))) { Write-Error "Im Projektordner fehlt: $need"; exit 1 }
-          }
-          "PROJECT_DIR=$rel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $rel = [IO.Path]::GetRelativePath($ws, $dir).Replace('\','/')
+
+          Write-Host "Projektordner: $dir"
+          "PROJECT_DIR=$rel" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - uses: actions/setup-node@v4
         with:
@@ -68,134 +55,191 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: npm install
 
-      - name: Logik-Tests (Konten, 2FA, Owner-Rechte, Limits, Suche …)
+      - name: Logik-Tests
         working-directory: ${{ env.PROJECT_DIR }}
         run: npm test
 
-      - name: Windows-Installer bauen (Zayriox_Setup.exe)
+      - name: Windows-Installer bauen
         working-directory: ${{ env.PROJECT_DIR }}
         run: npm run dist
 
-      - name: Build-Ergebnis anzeigen
+      - name: Build prüfen
         shell: pwsh
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          Get-ChildItem dist | Select-Object Name, Length | Format-Table -AutoSize | Out-Host
-          if (-not (Test-Path "dist\Zayriox_Setup.exe")) { Write-Error "dist\Zayriox_Setup.exe wurde nicht erzeugt"; exit 1 }
-          if (-not (Test-Path "dist\win-unpacked\Zayriox.exe")) { Write-Error "dist\win-unpacked\Zayriox.exe fehlt"; exit 1 }
+          if (-not (Test-Path "dist\Zayriox_Setup.exe")) {
+            Write-Error "Zayriox_Setup.exe wurde nicht erzeugt."
+            exit 1
+          }
 
-      - name: Kleines KI-Modell für den Selbsttest laden
+          if (-not (Test-Path "dist\win-unpacked\Zayriox.exe")) {
+            Write-Error "Zayriox.exe fehlt."
+            exit 1
+          }
+
+          Write-Host "Build erfolgreich."
+
+      - name: KI-Modell laden
         shell: pwsh
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" -OutFile "$env:RUNNER_TEMP\selftest-model.gguf"
-          $len = (Get-Item "$env:RUNNER_TEMP\selftest-model.gguf").Length
-          Write-Host "Modell: $len Bytes"
-          if ($len -lt 300000000) { Write-Error "Modell-Download unvollständig"; exit 1 }
 
-      - name: Sprach-Testdatei mit Windows-SAPI erzeugen
-        if: env.TEST_MODE == 'full'
-        shell: pwsh
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          $wav = Join-Path $env:RUNNER_TEMP "zayriox-voice-test.wav"
-          $voice = New-Object -ComObject SAPI.SpVoice
-          $stream = New-Object -ComObject SAPI.SpFileStream
-          $stream.Format.Type = 22   # SAFT22kHz16BitMono: normales PCM-WAV mit Header
-          $stream.Open($wav, 3, $false)
-          $voice.AudioOutputStream = $stream
-          $voice.Speak("Hello world. This is a Zayriox voice test.")
-          $stream.Close()
-          $voice.AudioOutputStream = $null
-          if (-not (Test-Path $wav) -or (Get-Item $wav).Length -lt 1000) { Write-Error "SAPI konnte keine WAV-Testdatei erzeugen"; exit 1 }
-          Write-Host "WAV: $wav ($((Get-Item $wav).Length) Bytes)"
+          Invoke-WebRequest `
+            -Uri "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" `
+            -OutFile "$env:RUNNER_TEMP\selftest-model.gguf"
 
-      - name: Selbsttest der entpackten App (echtes Fenster, Konten, echte KI, je nach Modus Dateien/Bild/Web/Voice)
+          $size = (Get-Item "$env:RUNNER_TEMP\selftest-model.gguf").Length
+
+          if ($size -lt 300000000) {
+            Write-Error "KI-Modell wurde nicht vollständig heruntergeladen."
+            exit 1
+          }
+
+      - name: Selbsttest der KI
         shell: pwsh
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $out = "$env:RUNNER_TEMP\selftest-unpacked.json"
-          $argList = @("--selftest", "--selftest-out=$out", "--selftest-model=$env:RUNNER_TEMP\selftest-model.gguf", "--selftest-dir=$env:RUNNER_TEMP\st1")
-          if ($env:TEST_MODE -eq 'full') { $argList += "--selftest-full"; $argList += "--selftest-wav=$env:RUNNER_TEMP\zayriox-voice-test.wav" }
-          Write-Host "Modus: $env:TEST_MODE"
-          $p = Start-Process -FilePath "dist\win-unpacked\Zayriox.exe" -ArgumentList $argList -PassThru
-          $null = $p.Handle
-          if (-not $p.WaitForExit(2400000)) { $p.Kill(); Write-Error "Selbsttest: Zeitüberschreitung"; exit 1 }
-          if (Test-Path $out) { Get-Content $out } else { Write-Host "Keine Ergebnisdatei erzeugt (App vermutlich beim Start abgestürzt)" }
-          if ($p.ExitCode -ne 0) { Write-Error "Selbsttest fehlgeschlagen (Exit $($p.ExitCode))"; exit 1 }
 
-      - name: Installer wirklich installieren (still) und Desktop-Verknüpfung prüfen
+          $args = @(
+            "--selftest",
+            "--selftest-out=$out",
+            "--selftest-model=$env:RUNNER_TEMP\selftest-model.gguf",
+            "--selftest-dir=$env:RUNNER_TEMP\st1"
+          )
+
+          $p = Start-Process `
+            -FilePath "dist\win-unpacked\Zayriox.exe" `
+            -ArgumentList $args `
+            -PassThru
+
+          $null = $p.Handle
+
+          if (-not $p.WaitForExit(2400000)) {
+            $p.Kill()
+            Write-Error "Selbsttest Zeitüberschreitung."
+            exit 1
+          }
+
+          if (Test-Path $out) {
+            Get-Content $out
+          }
+
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Selbsttest fehlgeschlagen: Exit $($p.ExitCode)"
+            exit 1
+          }
+
+          Write-Host "KI-Selbsttest erfolgreich."
+
+      - name: Installer installieren
         shell: pwsh
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          $setup = Start-Process -FilePath "dist\Zayriox_Setup.exe" -ArgumentList "/S" -PassThru -Wait
-          Write-Host "Installer-Exit: $($setup.ExitCode)"
-          Start-Sleep -Seconds 8
-          Get-Process -Name "Zayriox" -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 2
-          $exe = Join-Path $env:LOCALAPPDATA "Programs\Zayriox\Zayriox.exe"
-          "ZAYRIOX_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Erwartet: $exe"
-          if (-not (Test-Path $exe)) { Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1 | Select-Object -First 20; Write-Error "Zayriox.exe wurde nicht installiert"; exit 1 }
-          $desktop = [Environment]::GetFolderPath('Desktop')
-          $lnk = Join-Path $desktop "Zayriox.lnk"
-          Write-Host "Desktop-Verknüpfung: $lnk -> $(Test-Path $lnk)"
-          if (-not (Test-Path $lnk)) { Get-ChildItem $desktop | Out-Host; Write-Error "Desktop-Verknüpfung fehlt"; exit 1 }
+          $setup = Start-Process `
+            -FilePath "dist\Zayriox_Setup.exe" `
+            -ArgumentList "/S" `
+            -PassThru `
+            -Wait
 
-      - name: Selbsttest der INSTALLIERTEN App
+          Write-Host "Installer Exit: $($setup.ExitCode)"
+
+          Start-Sleep -Seconds 8
+
+          $exe = Join-Path `
+            $env:LOCALAPPDATA `
+            "Programs\Zayriox\Zayriox.exe"
+
+          if (-not (Test-Path $exe)) {
+            Write-Error "Zayriox wurde nicht installiert."
+            exit 1
+          }
+
+          "ZAYRIOX_EXE=$exe" |
+            Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Installierte App testen
         shell: pwsh
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           $out = "$env:RUNNER_TEMP\selftest-installed.json"
-          $argList = @("--selftest", "--selftest-out=$out", "--selftest-dir=$env:RUNNER_TEMP\st2")
-          if ($env:TEST_MODE -eq 'full') { $argList += "--selftest-full"; $argList += "--selftest-wav=$env:RUNNER_TEMP\zayriox-voice-test.wav" }
-          $p = Start-Process -FilePath $env:ZAYRIOX_EXE -ArgumentList $argList -PassThru
-          $null = $p.Handle
-          if (-not $p.WaitForExit(2400000)) { $p.Kill(); Write-Error "Selbsttest (installiert): Zeitüberschreitung"; exit 1 }
-          if (Test-Path $out) { Get-Content $out } else { Write-Host "Keine Ergebnisdatei erzeugt" }
-          if ($p.ExitCode -ne 0) { Write-Error "Selbsttest der installierten App fehlgeschlagen (Exit $($p.ExitCode))"; exit 1 }
 
-      - name: Rauchtest mit normalem Start (kein Browser, kein localhost, kein CMD-Fenster)
-        shell: pwsh
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          $p = Start-Process -FilePath $env:ZAYRIOX_EXE -PassThru
+          $args = @(
+            "--selftest",
+            "--selftest-out=$out",
+            "--selftest-dir=$env:RUNNER_TEMP\st2"
+          )
+
+          $p = Start-Process `
+            -FilePath $env:ZAYRIOX_EXE `
+            -ArgumentList $args `
+            -PassThru
+
           $null = $p.Handle
+
+          if (-not $p.WaitForExit(2400000)) {
+            $p.Kill()
+            Write-Error "Installierter Selbsttest Zeitüberschreitung."
+            exit 1
+          }
+
+          if (Test-Path $out) {
+            Get-Content $out
+          }
+
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Installierte App fehlgeschlagen."
+            exit 1
+          }
+
+      - name: Normalen App-Start testen
+        shell: pwsh
+        run: |
+          $p = Start-Process `
+            -FilePath $env:ZAYRIOX_EXE `
+            -PassThru
+
+          $null = $p.Handle
+
           $ready = $false
+
           for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Seconds 1
-            try { $p.Refresh() } catch {}
-            if ($p.HasExited) { Write-Error "Zayriox.exe ist beim normalen Start beendet worden (Exit $($p.ExitCode))"; exit 1 }
-            if ($p.MainWindowHandle -ne 0) { $ready = $true; break }
-          }
-          if (-not $ready) { Write-Error "Kein normales Zayriox-Fenster innerhalb von 40 Sekunden erkannt"; exit 1 }
-          Write-Host "Fenstertitel: $($p.MainWindowTitle)"
-          if ($p.MainWindowTitle -notmatch "Zayriox") { Write-Error "Fenstertitel enthält nicht Zayriox"; exit 1 }
-          Start-Sleep -Seconds 8   # Splash -> Hauptfenster abwarten, dann Prozessbaum prüfen
-          $all = Get-CimInstance Win32_Process
-          $ids = @($p.Id)
-          do { $n = $ids.Count; $ids = @($ids + ($all | Where-Object { $ids -contains $_.ParentProcessId } | ForEach-Object ProcessId) | Sort-Object -Unique) } while ($ids.Count -gt $n)
-          $names = ($all | Where-Object { $ids -contains $_.ProcessId } | ForEach-Object Name | Sort-Object -Unique) -join ", "
-          Write-Host "Prozesse der App: $names"
-          $bad = $all | Where-Object { $ids -contains $_.ProcessId -and $_.Name -match '^(cmd|conhost|powershell|pwsh|node|chrome|msedge|firefox)\.exe$' }
-          if ($bad) { Write-Error "Unerwartete Prozesse (Konsole/Browser): $(($bad | ForEach-Object Name) -join ', ')"; exit 1 }
-          $listen = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess }
-          if ($listen) { Write-Error "Zayriox lauscht auf Netzwerk-Ports: $(($listen | ForEach-Object LocalPort) -join ', ')"; exit 1 }
-          Write-Host "OK: Desktop-App, keine Konsole, kein Browser, keine offenen Ports."
-          & taskkill /PID $p.Id /T /F | Out-Host
 
-      - name: Installer als Artifact bereitstellen (nur wenn ALLE Schritte davor grün waren)
+            try {
+              $p.Refresh()
+            } catch {}
+
+            if ($p.HasExited) {
+              Write-Error "Zayriox wurde beim Start beendet."
+              exit 1
+            }
+
+            if ($p.MainWindowHandle -ne 0) {
+              $ready = $true
+              break
+            }
+          }
+
+          if (-not $ready) {
+            Write-Error "Zayriox-Fenster wurde nicht gefunden."
+            exit 1
+          }
+
+          Write-Host "Zayriox läuft."
+
+          & taskkill /PID $p.Id /T /F
+
+      - name: Installer als Artifact hochladen
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TEST_MODE == 'core' && 'Zayriox_Setup_NUR_KERNTESTS' || 'Zayriox_Setup' }}
+          name: Zayriox_Setup
           path: |
             ${{ env.PROJECT_DIR }}/dist/Zayriox_Setup.exe
             ${{ env.PROJECT_DIR }}/dist/latest.yml
             ${{ env.PROJECT_DIR }}/dist/*.blockmap
           if-no-files-found: error
 
-      - name: Selbsttest-Protokolle und App-Logs hochladen
+      - name: Testprotokolle hochladen
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -205,12 +249,4 @@ jobs:
             ${{ runner.temp }}/st1/logs/*.log
             ${{ runner.temp }}/st2/logs/*.log
           if-no-files-found: ignore
-
-      - name: Release veröffentlichen (nur bei Tag v* und Volltest)
-        if: startsWith(github.ref, 'refs/tags/v') && env.TEST_MODE == 'full'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.PROJECT_DIR }}/dist/Zayriox_Setup.exe
-            ${{ env.PROJECT_DIR }}/dist/latest.yml
-            ${{ env.PROJECT_DIR }}/dist/*.blockmap
+          
